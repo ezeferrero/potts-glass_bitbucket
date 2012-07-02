@@ -105,7 +105,7 @@
 #define BLOCK_M (ROUND_DOWN_POWER_OF_2(BLOCK_M_TMP))
 
 // Tweakeable parameters
-#define CUDA_DEVICE 0	// card number
+#define CUDA_DEVICE 1	// card number
 #define FRAME 512	// the whole thing is framed for the RNG
 #define TILE_X 32	// each block of threads is a tile
 #define TILE_Y 8
@@ -191,14 +191,14 @@ __global__ void updateCUDA(const FLOAT temp,
 			
 			//reading bonds
 			bindex = 4*(2*(i*L+j)+color);
-			//BYTE bond0 = d_bond[bindex + 0];
-			//BYTE bond1 = d_bond[bindex + 1];
-			//BYTE bond2 = d_bond[bindex + 2];
-			//BYTE bond3 = d_bond[bindex + 3];
-			BYTE bond0 = tex1Dfetch(t_bond, bindex + 0);
-			BYTE bond1 = tex1Dfetch(t_bond, bindex + 1);
-			BYTE bond2 = tex1Dfetch(t_bond, bindex + 2);
-			BYTE bond3 = tex1Dfetch(t_bond, bindex + 3);
+			BYTE bond0 = d_bond[bindex + 0];
+			BYTE bond1 = d_bond[bindex + 1];
+			BYTE bond2 = d_bond[bindex + 2];
+			BYTE bond3 = d_bond[bindex + 3];
+			//BYTE bond0 = tex1Dfetch(t_bond, bindex + 0);
+			//BYTE bond1 = tex1Dfetch(t_bond, bindex + 1);
+			//BYTE bond2 = tex1Dfetch(t_bond, bindex + 2);
+			//BYTE bond3 = tex1Dfetch(t_bond, bindex + 3);
 
 			// computing h_before
 			h_before = - ((spin_old==spin_neigh_n)==bond0) - ((spin_old==spin_neigh_e)==bond1)
@@ -384,7 +384,7 @@ __global__ void fill_bondsCUDA(BYTE* d_bond){
 			unsigned int index3 = 4*(2*(i*L+j)+WHITE)+3;
 
 			aux = (BYTE)(rand_MWC_co(&rng_state, &rng_const) <= 0.5);
-			//neighbor0 (north) of index. For neighbor0 index is its south neighbor !! sorprendentemente NO, es el 0 tambien
+			//neighbor0 (north) of index. For neighbor0 index is its south neighbor (which is 0 as well)
 			d_bond[index0] = aux;
 			d_bond[4*(2*(i*L + j) + BLACK) + 0] = aux;
 
@@ -399,12 +399,10 @@ __global__ void fill_bondsCUDA(BYTE* d_bond){
 			d_bond[4*(2*(i*L + (j-1+L)%L) + BLACK) + 1] = aux;
 
 			aux = (BYTE)(rand_MWC_co(&rng_state, &rng_const) <= 0.5);
-			//neighbor3 (south). For neighbor3 index is its north neighbor !! sorprendentemente NO, es el 3 tambien
+			//neighbor3 (south). For neighbor3 index is its north neighbor (which is 3 as well)
 			d_bond[index3] = aux;
 			d_bond[4*(2*(((i+(2*(WHITE^(j%2))-1)+L/2)%(L/2))*L + j) + BLACK) + 3] = aux;
 
-
-			//el sur de las negras es su norte y su norte es su sur, y esto no es una metáfora
 
 			//localizing neighbors
 			//spin_neigh_n = read[i*L + j];
@@ -797,7 +795,7 @@ int main(void)
 	assert((L*L/2)*4L<UINT_MAX); // max energy, that is all spins are the same, fits into a ulong
 
 	// set the GPGPU computing device
-	//CUDA_SAFE_CALL(cudaSetDevice(CUDA_DEVICE));
+	CUDA_SAFE_CALL(cudaSetDevice(CUDA_DEVICE));
 
 	// print header
 	printf("# Q: %i\n", Q);
@@ -864,9 +862,9 @@ int main(void)
 	for (unsigned int i=0; i<SAMPLES; i++) {
 
 		if(i%REALIZATIONS==0){
-			CUDA_SAFE_CALL(cudaUnbindTexture(t_bond));
+			//CUDA_SAFE_CALL(cudaUnbindTexture(t_bond));
 			fill_bonds(d_bond);
-			CUDA_SAFE_CALL(cudaBindTexture(NULL, t_bond, d_bond, sizeb));
+			//CUDA_SAFE_CALL(cudaBindTexture(NULL, t_bond, d_bond, sizeb));
 		}
 
 		// set the device counter matrix to 0
