@@ -14,23 +14,21 @@ LDFLAGS			= -lrt -lm -lcudart #-lcutil
 NVCC_FLAGS		= -O3 -arch=sm_20 --ptxas-options=-v --use_fast_math
 
 # Default Values
-Q                       = 3
+Q			= 5
 L			= 4096
 SAMPLES			= 1
-TEMP	                = 0.1
-TRAN                    = 0
-TMAX                    = 2000
-WAITING			= 1000
-DELTA_T                 = 1
-NPOINTS			= 80
-TC                      = $(shell echo "1 / l(1+sqrt($Q))" | bc -l)
-TEMPERATURE             = $(TEMP)
-OFILE			= dinamica[CUDA,$(Q),$(L),$(SAMPLES),$(TEMP),$(TRAN),$(TMAX),$(WAITING),$(DELTA_T)].dat
+TEMPERATURE		= 0.15
+TMAX			= 20000
+TWAIT			= 10000
+DELTA_T			= 1
+NPOINTS			= 100
+TC			= $(shell echo "1 / l(1+sqrt($Q))" | bc -l)
+OFILE			= dinamica[CUDA,$(Q),$(L),$(SAMPLES),$(TEMPERATURE),$(TMAX),$(TWAIT),$(DELTA_T)].dat
 
 # Simulation Parameters
 PARAMETERS		= -DQ=$(Q) -DL=$(L) -DSAMPLES=$(SAMPLES) \
-			-DTRAN=$(TRAN) -DTMAX=$(TMAX) -DWAITING=$(WAITING) \
-			-DTEMPERATURE=$(TEMPERATURE) -DDELTA_T=$(DELTA_T) -DNPOINTS=$(NPOINTS)
+			-DTMAX=$(TMAX) -DTWAIT=$(TWAIT) -DTEMPERATURE=$(TEMPERATURE) \
+			-DDELTA_T=$(DELTA_T) -DNPOINTS=$(NPOINTS)
 
 # Compilers
 NVCC			= $(CUDA_INSTALL_PATH)/bin/nvcc

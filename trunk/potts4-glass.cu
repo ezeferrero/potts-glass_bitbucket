@@ -1,5 +1,49 @@
 /*
- * potts4.cu
+ * potts4-glass.cu
+ */
+
+/*
+ * potts4-glass is a CUDA implementation of the +/-J q-state Potts-Glass model.
+ * It is based on potts3 originally presented in [1].
+ * For an L*L system, the code chooses randomly a (+1) or (-1) bond for each nearestneighbors interaction.
+ * It sets a initial disordered (random) configuration for the blacks/whites cells of the lattice.
+ * It fixes the temperature of the system to TEMPERATURE (quench from infinite temperature to TEMPERATURE)
+ * and run TMAX Monte Carlo steps (MCS) measuring physical quantities at selected times (logarithmically distributed).
+ * Starting at time TWAIT and until time TMAX the number of flips experienced by each spin is counted.
+ * An histogram of mean fliping time distribution (MFTD) is constructed.
+ * The whole loop is repeated SAMPLES times to average over different disorder configurations.
+ * The outputs are the samples averaged energy as a function of time and MFTD.
+ * Copyright (C) 2012 Ezequiel E. Ferrero, Federico Romá, Sebastián Bustingorry and Pablo M. Gleiser.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+/*
+ * This code was originally implemented for: "Dynamical heterogeneities as 
+ * fingerprints of a backbone structure in Potts models",
+ * E. E. Ferrero, F. Romá, S. Bustingorry and P. M. Gleiser
+ * to be published in Physical Review E
+ * http://arxiv.org/abs/...
+ * doi:...
+ * Please cite when appropriate
+ */
+
+/* References
+ * [1] "q-state Potts model metastability study using optimized GPU-based Monte Carlo algorithms",
+ * Ezequiel E. Ferrero, Juan Pablo De Francesco, Nicolás Wolovick, Sergio A. Cannas
+ * Computer Physics Communications 183 (2012) 1578–1587
+ * http://arxiv.org/abs/1101.0876
  */
 
 
@@ -10,12 +54,11 @@
 #include <sys/time.h> // gettimeofday
 #include <assert.h>
 #include <limits.h> // UINT_MAX
-#include "cutil.h" // CUDA_SAFE_CALL, CUT_CHECK_ERROR
+#include <iostream> // for print stuff
+#include <iomanip> //for print stuff
+#include <fstream> // for print stuff
 
-#include<iostream> /*para los printf*/
-#include <iomanip> /*para los printf*/
-#include<fstream> /*para los printf*/
-
+#include "cutil.h" // CUDA_SAFE_CALL, CUT_CHECK_ERROR form CUDA SDK
 
 // Default parameters
 #ifndef Q
@@ -25,7 +68,7 @@
 #define IS_ISING (Q==2)
 
 #ifndef L
-#define L 2048 // linear system size
+#define L 4096 // linear system size
 #endif
 
 #ifndef SAMPLES
@@ -33,39 +76,33 @@
 #endif
 
 #ifndef TEMPERATURE
-#define TEMPERATURE 0.70f // temperature
-#endif
-
-#ifndef TRAN
-#define TRAN 20000 // equilibration time
+#define TEMPERATURE 0.70 // temperature
 #endif
 
 #ifndef TMAX
-#define TMAX 10000 // measurement time
+#define TMAX 200000 // measurement time
 #endif
 
-#ifndef WAITING
-#define WAITING 10000
+#ifndef TWAIT
+#define TWAIT 100000 // waiting time (for the MFTD)
 #endif
 
 #ifndef DELTA_T
-#define DELTA_T 1 // sampling period for energy and magnetization
+#define DELTA_T 1 // starting sampling period for the energy (then it increases logaritmically)
 #endif
 
-#define MAYOR_ORDEN ((int) log10((double) TMAX + 0.1))
+//#define GREATEST_OoM ((int) log10((double) TMAX + 0.1))
+// #define NPOINTS (GREATEST_OoM*9 + 3 + 2)
 
 #ifndef NPOINTS
-// #define NPOINTS (MAYOR_ORDEN*9 + 3 + 2)
 #define NPOINTS 100
 #endif
 
+// Parameters for the MFTD arrays
 #define MAX_ORD 9
 #define MAX_BIN 20
 
-#define REALIZATIONS 1
-
 // Functions
-
 // maximum
 #define MAX(a,b) (((a)<(b))?(b):(a))
 // minimum
@@ -77,18 +114,11 @@
 // http://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
 #define ROUND_DOWN_POWER_OF_2(x) (( ( (x)>>0 | (x)>>1 | (x)>>2 | (x)>>3 | (x)>>4 | (x)>>5 | (x)>>6 | (x)>>7 | (x)>>8 | (x)>>9 | (x)>>10 | (x)>>11 | (x)>>12 | (x)>>13 | (x)>>14 | (x)>>15 | (x)>>16 | (x)>>17 | (x)>>18 | (x)>>19 | (x)>>20 ) +1 ) >> 1)
 
-// here we cannot use __CUDA_ARCH__, since it is only available on kernels,
 // simply uncomment the desired option
-
-// Hardware parameters for GTX 280 (GT200)
-//#define SHARED_PER_BLOCK 16384
-//#define WARP_SIZE 32
-//#define THREADS_PER_BLOCK 512
-//#define BLOCKS_PER_GRID 65535
 // Hardware parameters for GTX 470/480 (GF100)
 #define SHARED_PER_BLOCK 49152
 #define WARP_SIZE 32
-#define THREADS_PER_BLOCK 512 // 1024 has 66% occupancy
+#define THREADS_PER_BLOCK 512
 #define BLOCKS_PER_GRID 65535
 
 // Auto adjusting parameters
@@ -105,24 +135,26 @@
 #define BLOCK_M (ROUND_DOWN_POWER_OF_2(BLOCK_M_TMP))
 
 // Tweakeable parameters
-#define CUDA_DEVICE 1	// card number
+#define CUDA_DEVICE 0	// card number
 #define FRAME 512	// the whole thing is framed for the RNG
 #define TILE_X 32	// each block of threads is a tile
 #define TILE_Y 8
-#undef DETERMINISTIC_WRITE // spin write is deterministic or probabilistic
+#undef DETERMINISTIC_WRITE // spin write operation is deterministic or probabilistic, only for profiling purposes.
 
 // Internal definitions and functions
-// out vector size, it is +1 since we reach TEMP_MAX
-//#define NPOINTS (1+(int)((TEMP_MAX-TEMP_MIN)/DELTA_TEMP))
 #define N (L*L) // system size
-#define SAFE_PRIMES_FILENAME "../../common/safeprimes_base32.txt"
-#define SEED (time(NULL)) // random seed
+#define SAFE_PRIMES_FILENAME "../../../common/safeprimes_base32.txt"
+#define SEED (time(NULL)) // random seed otherwise choose any big integer
 #define MICROSEC (1E-6)
 #define WHITE 0
 #define BLACK 1
 
 /* FLOATing point */
+#ifndef FULL_DOUBLE_PRESICION
 typedef float FLOAT;
+#else
+typedef double FLOAT;
+#endif
 
 // cells are bytes
 typedef unsigned char BYTE;
@@ -138,7 +170,9 @@ static int timeval_subtract (struct timeval *result, struct timeval *x, struct t
 static void writePPMbinaryImage(const char * filename, const unsigned int * vector, const int color);
 #endif
 
+#ifdef USE_TEXTURE
 texture<BYTE,1,cudaReadModeElementType> t_bond;
+#endif
 
 using namespace std;
 
@@ -155,7 +189,7 @@ __device__ static unsigned int d_a[NUM_THREADS];
  ***/
 
 // RNG: multiply with carry
-#include "../../common/CUDAMCMLrng.cu"
+#include "../../../common/CUDAMCMLrng.cu"
 
 
 __global__ void updateCUDA(const FLOAT temp,
@@ -190,15 +224,18 @@ __global__ void updateCUDA(const FLOAT temp,
 			spin_neigh_s = read[((i+(2*(color^(j%2))-1)+L/2)%(L/2))*L + j];
 			
 			//reading bonds
-			bindex = 4*(2*(i*L+j)+color);
+			bindex = 2*N*color + 4*(i*L+j);
+			#ifndef USE_TEXTURE
 			BYTE bond0 = d_bond[bindex + 0];
 			BYTE bond1 = d_bond[bindex + 1];
 			BYTE bond2 = d_bond[bindex + 2];
 			BYTE bond3 = d_bond[bindex + 3];
-			//BYTE bond0 = tex1Dfetch(t_bond, bindex + 0);
-			//BYTE bond1 = tex1Dfetch(t_bond, bindex + 1);
-			//BYTE bond2 = tex1Dfetch(t_bond, bindex + 2);
-			//BYTE bond3 = tex1Dfetch(t_bond, bindex + 3);
+			#else
+			BYTE bond0 = tex1Dfetch(t_bond, bindex + 0);
+			BYTE bond1 = tex1Dfetch(t_bond, bindex + 1);
+			BYTE bond2 = tex1Dfetch(t_bond, bindex + 2);
+			BYTE bond3 = tex1Dfetch(t_bond, bindex + 3);
+			#endif
 
 			// computing h_before
 			h_before = - ((spin_old==spin_neigh_n)==bond0) - ((spin_old==spin_neigh_e)==bond1)
@@ -206,7 +243,6 @@ __global__ void updateCUDA(const FLOAT temp,
 
 			// new spin
 			if (IS_ISING){
-			//spin_new = (spin_old+1)%2;
 			spin_new = (spin_old==0);
 			}else{
 			spin_new = (spin_old + (BYTE)(1 + rand_MWC_co(&rng_state, &rng_const)*(Q-1))) % Q;
@@ -221,11 +257,11 @@ __global__ void updateCUDA(const FLOAT temp,
 #ifdef DETERMINISTIC_WRITE
 			int change = delta_E<=0 || p<=expf(-delta_E/temp);
 			write[i*L + j] = (change)*spin_new + (1-change)*spin_old;
-			if (time>WAITING) count[i*L + j]+= change;
+			if (time>TWAIT) count[i*L + j]+= change;
 #else
 			if (delta_E<=0 || p<=expf(-delta_E/temp)) {
 				write[i*L + j] = spin_new;
- 				if (time>WAITING) count[i*L + j]+= 1;
+ 				if (time>TWAIT) count[i*L + j]+= 1;
 			}
 #endif
 		}
@@ -237,7 +273,7 @@ __global__ void updateCUDA(const FLOAT temp,
 __global__ void calculateCUDA(const BYTE* __restrict__ const white,
 			      const BYTE* __restrict__ const black,
 			      unsigned int* __restrict__ const Ematrix,
-			      unsigned int* __restrict__ const Mmatrix) {
+			      unsigned int* __restrict__ const Mmatrix, BYTE* d_bond) {
 	const unsigned int j = blockIdx.x*TILE_X + threadIdx.x;
 	const unsigned int i = blockIdx.y*TILE_Y + threadIdx.y;
 
@@ -267,8 +303,17 @@ __global__ void calculateCUDA(const BYTE* __restrict__ const white,
 	spin_neigh.z = black[i*L + (j-1+L)%L];
 	spin_neigh.w = black[((i+(2*(j%2)-1)+L/2)%(L/2))*L + j];
 
+
+	//reading WHITES bonds
+	const unsigned int bindex = 4*(i*L+j);
+	BYTE bond0 = d_bond[bindex + 0];
+	BYTE bond1 = d_bond[bindex + 1];
+	BYTE bond2 = d_bond[bindex + 2];
+	BYTE bond3 = d_bond[bindex + 3];
+
 	// energy is pairwise, is enough to add white.
-	atomicAdd(&E, (spin==spin_neigh.x)+(spin==spin_neigh.y)+(spin==spin_neigh.z)+(spin==spin_neigh.w));
+	//atomicAdd(&E, (spin==spin_neigh.x)+(spin==spin_neigh.y)+(spin==spin_neigh.z)+(spin==spin_neigh.w));
+	atomicAdd(&E, (spin==spin_neigh.x)==bond0)+((spin==spin_neigh.y)==bond1)+((spin==spin_neigh.z)==bond2)+((spin==spin_neigh.w)==bond3);
 	atomicAdd(&(M[spin]), 1);
 
 	spin = black[i*L + j];
@@ -358,7 +403,7 @@ __global__ void init_randomCUDA(BYTE *a){
 			a[index] = (BYTE) (Q*rand_MWC_co(&rng_state, &rng_const));
 		}
 	}	
-	d_x[tid] = rng_state; // store RNG state into global again		
+	d_x[tid] = rng_state; // store RNG state into global again
 }
 
 __global__ void fill_bondsCUDA(BYTE* d_bond){
@@ -378,30 +423,31 @@ __global__ void fill_bondsCUDA(BYTE* d_bond){
 		for (unsigned int jFrame=0; jFrame<(L/FRAME); jFrame++) {
 			j = jOriginal + FRAME*jFrame;
 
-			unsigned int index0 = 4*(2*(i*L+j)+WHITE)+0;
-			unsigned int index1 = 4*(2*(i*L+j)+WHITE)+1;
-			unsigned int index2 = 4*(2*(i*L+j)+WHITE)+2;
-			unsigned int index3 = 4*(2*(i*L+j)+WHITE)+3;
+			//index for WHITE cells neighbors
+			unsigned int index0 = 4*(i*L+j)+0; //4*(2*(i*L+j)+WHITE)+0;
+			unsigned int index1 = 4*(i*L+j)+1; //4*(2*(i*L+j)+WHITE)+1;
+			unsigned int index2 = 4*(i*L+j)+2; //4*(2*(i*L+j)+WHITE)+2;
+			unsigned int index3 = 4*(i*L+j)+3; //4*(2*(i*L+j)+WHITE)+3;
 
 			aux = (BYTE)(rand_MWC_co(&rng_state, &rng_const) <= 0.5);
 			//neighbor0 (north) of index. For neighbor0 index is its south neighbor (which is 0 as well)
 			d_bond[index0] = aux;
-			d_bond[4*(2*(i*L + j) + BLACK) + 0] = aux;
+			d_bond[2*N + 4*(i*L + j) + 0] = aux;
 
 			aux = (BYTE)(rand_MWC_co(&rng_state, &rng_const) <= 0.5);
 			//neighbor1 (east). For neighbor1 index is its west neighbor 
 			d_bond[index1] = aux;
-			d_bond[4*(2*(i*L + (j+1)%L) + BLACK) + 2] = aux;
+			d_bond[2*N + 4*(i*L + (j+1)%L) + 2] = aux;
 
 			aux = (BYTE)(rand_MWC_co(&rng_state, &rng_const) <= 0.5);
 			//neighbor2 (west). For neighbor2 index is its east neighbor 
 			d_bond[index2] = aux;
-			d_bond[4*(2*(i*L + (j-1+L)%L) + BLACK) + 1] = aux;
+			d_bond[2*N + 4*(i*L + (j-1+L)%L) + 1] = aux;
 
 			aux = (BYTE)(rand_MWC_co(&rng_state, &rng_const) <= 0.5);
 			//neighbor3 (south). For neighbor3 index is its north neighbor (which is 3 as well)
 			d_bond[index3] = aux;
-			d_bond[4*(2*(((i+(2*(WHITE^(j%2))-1)+L/2)%(L/2))*L + j) + BLACK) + 3] = aux;
+			d_bond[2*N + 4*(((i+(2*(WHITE^(j%2))-1)+L/2)%(L/2))*L + j) + 3] = aux;
 
 
 			//localizing neighbors
@@ -433,7 +479,7 @@ __global__ void calculateMFT_CUDA(unsigned int* semi_matrix_count, unsigned int*
 	__syncthreads();
 
 	if (nf!=0){ 
-		FLOAT mftaux = (t-WAITING)/(FLOAT)(nf);
+		FLOAT mftaux = (t-TWAIT)/(FLOAT)(nf);
 		FLOAT aux = log10f(mftaux);
 		int ord = (int) aux;
 		int bin = (int) (MAX_BIN*(aux-ord));
@@ -448,27 +494,6 @@ __global__ void calculateMFT_CUDA(unsigned int* semi_matrix_count, unsigned int*
 		tid+=TILE_X*TILE_Y;
 	}
 }
-
-/*
-__global__ void calculateMFT_CUDA(unsigned int* semi_matrix_count, unsigned int* Pdistr, unsigned int t){
-	const unsigned int jOriginal = blockIdx.x*TILE_X + threadIdx.x;
-	const unsigned int iOriginal = blockIdx.y*TILE_Y + threadIdx.y;
-	
-	unsigned int k =iOriginal*(L/2)+jOriginal;
-	unsigned int nf = semi_matrix_count[k];
-//	int ningunflip = nf==0;
-
-	if (nf!=0){ 
-//		FLOAT mftaux = (t-WAITING)/(FLOAT)(nf+ningunflip);
-		FLOAT mftaux = (t-WAITING)/(FLOAT)(nf);
-		FLOAT aux = log10f(mftaux);
-		int ORD = (int) aux;
-		int BIN = (int) (MAX_BIN*(aux-ORD));
-		atomicAdd(&Pdistr[ORD*MAX_BIN+BIN],1);
-	}
-}
-*/
-
 
 /***
  * Host functions
@@ -515,7 +540,7 @@ void print_input2(FLOAT *array, ofstream &fstr){
 	fstr << "#distribucion al tiempo" << TMAX << endl;
 
 	for(int j=0;j<MAX_ORD*MAX_BIN;j++){
-		if (array[j]!=0) fstr << j/(double)(MAX_BIN) << " " << (MAX_BIN)*(TMAX-WAITING)*log(10.)*array[j]/(double)((MAX_BIN)*pow(10.,j/(double)(MAX_BIN))) << endl; 
+		if (array[j]!=0) fstr << j/(double)(MAX_BIN) << " " << (MAX_BIN)*(TMAX-TWAIT)*log(10.)*array[j]/(double)((MAX_BIN)*pow(10.,j/(double)(MAX_BIN))) << endl; 
 		//fstr << j/(FLOAT)(MAX_BIN) << " " << array[k] << endl; 
 	}
 	fstr << endl;
@@ -540,7 +565,7 @@ static void update(const FLOAT temp, BYTE* const white, BYTE* const black, unsig
 }
 
 
-static double calculate(const BYTE* const white, const BYTE* const black, unsigned int* const M_max) {
+static double calculate(const BYTE* const white, const BYTE* const black, unsigned int* const M_max, BYTE* d_bond) {
 	double energy = 0.0;
 	assert(white!=NULL && black!=NULL);
 	assert(M_max!=NULL);
@@ -563,7 +588,7 @@ static double calculate(const BYTE* const white, const BYTE* const black, unsign
 	assert(Q<L/2); // at least one thread per magnetization level (Q)
 	assert(dimBlockC.x*dimBlockC.y<=THREADS_PER_BLOCK);
 	assert(dimGridC.x<=BLOCKS_PER_GRID && dimGridC.y<=BLOCKS_PER_GRID);
-	calculateCUDA<<<dimGridC, dimBlockC>>>(white, black, E_matrix, M_matrix);
+	calculateCUDA<<<dimGridC, dimBlockC>>>(white, black, E_matrix, M_matrix, d_bond);
 	CUT_CHECK_ERROR("Kernel calculateCUDA execution failed");
 
 	// partially sum up the energy matrix in the GPU
@@ -631,17 +656,10 @@ static void sample(BYTE* const white, BYTE* const black, unsigned int* const whi
 	//init random
 	init_random(white,black);
 
-	double temp = TEMPERATURE;
-
-/*	// equilibrating phase
-	for (unsigned int t=0; t<TRAN; t++) {
-		update(temp, white, black, white_count, black_count);
-	}
-*/
 	//estado inicial
 	double energy = 0.0, mag = 0.0;
 	unsigned int M_max = 0;
-	energy = calculate(white, black, &M_max);
+	energy = calculate(white, black, &M_max, d_bond);
 	mag = (Q*M_max/(1.0*N) - 1) / (double)(Q-1);
 	
 	int index = 0;
@@ -652,6 +670,7 @@ static void sample(BYTE* const white, BYTE* const black, unsigned int* const whi
 	index++;
 
 	int delta_time = DELTA_T;
+	FLOAT temp = TEMPERATURE;
 	for (unsigned int t=1; t<TMAX; t++) {
 		update(temp, white, black, white_count, black_count, t, d_bond);
 
@@ -660,20 +679,20 @@ static void sample(BYTE* const white, BYTE* const black, unsigned int* const whi
 			if (t==delta_time*10) delta_time *= 10;
 			double energy = 0.0, mag = 0.0;
 			unsigned int M_max = 0;
-			energy = calculate(white, black, &M_max);
+			energy = calculate(white, black, &M_max, d_bond);
 			mag = (Q*M_max/(1.0*N) - 1) / (double)(Q-1);
 			assert(index<NPOINTS);
 			stats[index].t = t;
 			stats[index].e += energy;
 			stats[index].m += mag;
 			index++;
-		}	
+		}
 	}
 
 	//mido también el último punto
 	energy = 0.0, mag = 0.0;
 	M_max = 0;
-	energy = calculate(white, black, &M_max);
+	energy = calculate(white, black, &M_max, d_bond);
 	mag = (Q*M_max/(1.0*N) - 1) / (double)(Q-1);
 	assert(index<NPOINTS);
 	stats[index].t = TMAX;
@@ -802,7 +821,6 @@ int main(void)
 	printf("# L: %i\n", L);
 	printf("# Number of Samples: %i\n", SAMPLES);
 	printf("# Minimum Temperature: %f\n", TEMPERATURE);
-	printf("# Equilibration Time: %i\n", TRAN);
 	printf("# Measurement Time: %i\n", TMAX);
 	printf("# Data Acquiring Step (on each OoM): %i\n", DELTA_T);
 	printf("# Number of Points: %i\n", NPOINTS);
@@ -853,19 +871,21 @@ int main(void)
 		h_mft_distribution[j]=0;
 	}
 
-	//cudaMalloc para d_bond
-	//d_bond is a matrix of 2 * L/L/2 * 4
-	//d_bond[color*L*L/2 + 4*(i*L+j) + neighbor]	
+	//cudaMalloc for d_bond
+	//d_bond is a matrix of N*4
+	//d_bond[color*L*L + 4*(i*L+j) + neighbor]
 	const size_t sizeb = L*L*4*sizeof(BYTE);
 	CUDA_SAFE_CALL(cudaMalloc((void**) &d_bond, sizeb));
 	
 	for (unsigned int i=0; i<SAMPLES; i++) {
 
-		if(i%REALIZATIONS==0){
-			//CUDA_SAFE_CALL(cudaUnbindTexture(t_bond));
-			fill_bonds(d_bond);
-			//CUDA_SAFE_CALL(cudaBindTexture(NULL, t_bond, d_bond, sizeb));
-		}
+		#ifndef USE_TEXTURE
+		fill_bonds(d_bond);
+		#else
+		CUDA_SAFE_CALL(cudaUnbindTexture(t_bond));
+		fill_bonds(d_bond);
+		CUDA_SAFE_CALL(cudaBindTexture(NULL, t_bond, d_bond, sizeb));
+		#endif
 
 		// set the device counter matrix to 0
 		CUDA_SAFE_CALL(cudaMemset(white_count, 0, size2));
@@ -897,8 +917,8 @@ int main(void)
 		reference_distribution[j]=0;
 	}
 
-	for (int k=1; k<(TMAX+1-WAITING); k++){
-		FLOAT mftaux = (TMAX-WAITING)/(FLOAT)(k);
+	for (int k=1; k<(TMAX+1-TWAIT); k++){
+		FLOAT mftaux = (TMAX-TWAIT)/(FLOAT)(k);
 		FLOAT aux = log10f(mftaux);
 		int ORD = (int) aux;
 		int BIN = (int) (MAX_BIN*(aux-ORD));
@@ -919,14 +939,14 @@ int main(void)
 	for (int j=0; j<MAX_ORD*MAX_BIN; j++){
 		mft_distribution_av[j] = mft_distribution_av[j]/(FLOAT)(SAMPLES);
 	}
-	sprintf(mft_file, "mft[CUDA,%i,%i,%i,%f,%i,%i,%i,%i]-sin.dat", Q, L, SAMPLES, TEMPERATURE, TRAN, TMAX, WAITING, DELTA_T);
+	sprintf(mft_file, "mft[CUDA,%i,%i,%i,%f,%i,%i,%i]-sin.dat", Q, L, SAMPLES, TEMPERATURE, TMAX, TWAIT, DELTA_T);
 	ofstream resultado1(mft_file);
 	print_input1(mft_distribution_av, resultado1);
 
 	for (int j=0; j<MAX_ORD*MAX_BIN; j++){
 		if (reference_distribution[j]!=0) mft_distribution_av[j] = mft_distribution_av[j]/(FLOAT)(reference_distribution[j]);
 	}
-	sprintf(mft_file, "mft[CUDA,%i,%i,%i,%f,%i,%i,%i,%i]-con.dat", Q, L, SAMPLES, TEMPERATURE, TRAN, TMAX, WAITING, DELTA_T);
+	sprintf(mft_file, "mft[CUDA,%i,%i,%i,%f,%i,%i,%i]-con.dat", Q, L, SAMPLES, TEMPERATURE, TMAX, TWAIT, DELTA_T);
 	ofstream resultado2(mft_file);
 	print_input2(mft_distribution_av, resultado2);
 
@@ -1033,9 +1053,9 @@ void writePPMbinaryImage(const char * filename, const unsigned int * vector, int
 			 * http://mainline.brynmawr.edu/Courses/cs120/spring2008/Labs/ColorMaps/colorMap.py
 			 */
 			//FLOAT x = vector[i*L+j]/(FLOAT) (TMAX/16.); /* [0,1] */
-			if (color==0) x = (FLOAT) ( log10((TMAX-WAITING)/(FLOAT) vector[i*L+j]) <= 1); /* [0,1] */
-			if (color==1) x = (int) log(vector[i*L+j]) / log(TMAX-WAITING); /* [0,1] */
-			//FLOAT x = (FLOAT) ((log(vector[i*L+j]) / log(TMAX-WAITING)) <= 0.5); /* [0,1] */
+			if (color==0) x = (FLOAT) ( log10((TMAX-TWAIT)/(FLOAT) vector[i*L+j]) <= 1); /* [0,1] */
+			if (color==1) x = (int) log(vector[i*L+j]) / log(TMAX-TWAIT); /* [0,1] */
+			//FLOAT x = (FLOAT) ((log(vector[i*L+j]) / log(TMAX-TWAIT)) <= 0.5); /* [0,1] */
 			RGB[0] = (unsigned char) MIN(255, MAX(0, 256*RGBf21));
 			RGB[1] = (unsigned char) MIN(255, MAX(0, 256*RGBf22));
 			RGB[2] = (unsigned char) MIN(255, MAX(0, 256*RGBf23));
