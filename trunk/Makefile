@@ -17,18 +17,17 @@ NVCC_FLAGS		= -O3 -arch=sm_20 --ptxas-options=-v --use_fast_math
 Q			= 5
 L			= 4096
 SAMPLES			= 1
-TEMPERATURE		= 0.15
+TEMPERATURE		= 0.175
 TMAX			= 20000
 TWAIT			= 10000
-DELTA_T			= 1
 NPOINTS			= 100
-TC			= $(shell echo "1 / l(1+sqrt($Q))" | bc -l)
-OFILE			= dinamica[CUDA,$(Q),$(L),$(SAMPLES),$(TEMPERATURE),$(TMAX),$(TWAIT),$(DELTA_T)].dat
+DELTA_T			= 1
+OFILE			= energy[$(Q),$(L),$(SAMPLES),$(TEMPERATURE),$(TMAX),$(TWAIT),$(DELTA_T)].dat
 
 # Simulation Parameters
 PARAMETERS		= -DQ=$(Q) -DL=$(L) -DSAMPLES=$(SAMPLES) \
 			-DTMAX=$(TMAX) -DTWAIT=$(TWAIT) -DTEMPERATURE=$(TEMPERATURE) \
-			-DDELTA_T=$(DELTA_T) -DNPOINTS=$(NPOINTS)
+			-DNPOINTS=$(NPOINTS) -DDELTA_T=$(DELTA_T)
 
 # Compilers
 NVCC			= $(CUDA_INSTALL_PATH)/bin/nvcc
