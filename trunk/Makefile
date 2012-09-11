@@ -2,8 +2,8 @@
 BIN			= potts4-glass
 
 # Flags
-CUDA_INSTALL_PATH	?= /usr
-#CUDA_INSTALL_PATH	= /usr/local/cuda
+#CUDA_INSTALL_PATH	?= /usr
+CUDA_INSTALL_PATH	= /usr/local/cuda
 CUDASDK_INSTALL_PATH	= /opt/cudasdk
 CUDA_LIB_PATH		= $(CUDA_INSTALL_PATH)/lib64
 CUDASDK_LIB_PATH	= $(CUDASDK_INSTALL_PATH)/C/lib
@@ -17,7 +17,7 @@ NVCC_FLAGS		= -O3 -arch=sm_20 --ptxas-options=-v --use_fast_math
 Q			= 5
 L			= 4096
 SAMPLES			= 1
-TEMPERATURE		= 0.175
+TEMPERATURE		= 0.15
 TMAX			= 20000
 TWAIT			= 10000
 NPOINTS			= 100

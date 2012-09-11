@@ -30,13 +30,12 @@
  */
 
 /*
- * This code was originally implemented for: "Dynamical heterogeneities as 
+ * This code was originally implemented for: "Dynamical heterogeneities as
  * fingerprints of a backbone structure in Potts models",
  * E. E. Ferrero, F. Romá, S. Bustingorry and P. M. Gleiser
+ * http://arxiv.org/abs/1209.1743
  * to be published in Physical Review E
- * http://arxiv.org/abs/...
- * doi:...
- * Please cite when appropriate
+ * Please cite when appropriate.
  */
 
 /* References
@@ -473,7 +472,6 @@ void PrintMftdRaw(FLOAT *array, ofstream &fstr){
 	fstr << "#distribucion al tiempo" << TMAX << endl;
 	for(int j=0;j<MAX_ORD*MAX_BIN;j++){
 		if (array[j]!=0) fstr << j/(double)(MAX_BIN) << " " << (MAX_BIN)*array[j] << endl; 
-		//fstr << j/(FLOAT)(MAX_BIN) << " " << array[k] << endl; 
 	}
 	fstr << endl;
 }
